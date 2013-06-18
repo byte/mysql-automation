@@ -8,9 +8,9 @@
 #  --git-dir <dir>
 #  Path to Git repository.
 #
-#  --doc-pkg <pathname>
-#  Path to a gzipped tar file which contains the required
-#  documentation artifacts.
+#  --doc-dir <dir>
+#  Path to directory that contains the required documentation
+#  artifacts.
 #
 #  --build-tag <tag>
 #  A Git tag reference that refers to the last commit.
@@ -23,8 +23,8 @@
 #
 # Usage:
 #
-# $ ma-sdist --git-dir .git --doc-pkg mysql-5.5-doc.tar.gz      \
-#            --build-tag "jenkins-mysql-5.5-cpack_source-30"    \
+# $ ma-sdist --git-dir .git --doc-dir mysqldoc-x.y.z/         \
+#            --build-tag "jenkins-mysql-5.5-cpack_source-30"  \
 #            --build-dir build/
 #
 
@@ -39,7 +39,7 @@ program_name=$0
 
 function usage
 {
-  echo "Usage: $program_name --git-dir <dir> --doc-pkg <pathname> "  \
+  echo "Usage: $program_name --git-dir <dir> --doc-dir <dir> " \
                             "--build-tag <tag> --build-dir <dir> --help"
   exit $E_BADARGS
 }
@@ -49,7 +49,7 @@ if [ $# -eq 0 ]; then usage; fi
 
 # Parse command options.
 TEMP=$(getopt -n "$program_name" -o h \
--l git-dir:,doc-pkg:,build-tag:,build-dir:,help -- "$@")
+-l git-dir:,doc-dir:,build-tag:,build-dir:,help -- "$@")
 
 # Error was reported on stderr.
 if [ $? != 0 ]; then exit $E_BADARGS; fi
@@ -61,7 +61,7 @@ eval set -- "$TEMP"
 #
 
 GIT_DIR=
-DOC_PKG=
+DOC_DIR=
 BUILD_TAG=
 BUILD_DIR=
 
@@ -69,7 +69,7 @@ while true
 do
   case "$1" in
     --git-dir) GIT_DIR=$2; shift 2 ;;
-    --doc-pkg) DOC_PKG=$2; shift 2 ;;
+    --doc-dir) DOC_DIR=$2; shift 2 ;;
     --build-tag) BUILD_TAG=$2; shift 2 ;;
     --build-dir) BUILD_DIR=$2; shift 2 ;;
     -h|--help) usage ;;
@@ -78,10 +78,19 @@ do
   esac
 done
 
-if [ -z "$GIT_DIR" -o -z "$DOC_PKG" -o -z "$BUILD_TAG" -o -z "$BUILD_DIR" ]
-then
-  usage
-fi
+# Required option.
+function missing
+{
+  echo "$program_name: option \`$1' is required" >&2
+  exit $E_BADARGS
+}
+
+# Check required options.
+for var in GIT_DIR DOC_DIR BUILD_TAG BUILD_DIR; do
+  if [[ ${!var:+isset} != isset ]]; then
+    missing "--$(echo $var | tr '[A-Z]' '[a-z]')";
+  fi
+done
 
 # Disable exit on error for argument checking.
 set +e
@@ -90,25 +99,25 @@ set +e
 ABS_GIT_DIR=$(readlink -ne $GIT_DIR)
 
 if [ $? -ne 0 -o ! -d "$ABS_GIT_DIR" ]; then
-  echo "\"$GIT_DIR\" either does not exist, or is not a git directory."
+  echo "--git-dir: \"$GIT_DIR\" either does not exist, or is not a git directory."
   exit $E_NOFILE
 fi
 
 GIT_DIR=$ABS_GIT_DIR
 
-if [ ! -f "$DOC_PKG" ]; then
-  echo "\"$DOC_PKG\" either does not exist, or is not a file."
-  exit $E_NOFILE
-fi
-
 ABS_BUILD_DIR=$(readlink -ne $BUILD_DIR)
 
 if [ $? -ne 0 -o ! -d "$ABS_BUILD_DIR" ]; then
-  echo "\"$BUILD_DIR\" either does not exist, or is not a directory."
+  echo "--build-dir: \"$BUILD_DIR\" either does not exist, or is not a directory."
   exit $E_NOFILE
 fi
 
 BUILD_DIR=$ABS_BUILD_DIR
+
+if [ ! -d "$DOC_DIR" ]; then
+  echo "--doc-dir: \"$DOC_DIR\" either does not exist, or is not a file."
+  exit $E_NOFILE
+fi
 
 # Exit if a command finishes with a non-zero status.
 set -e
@@ -118,7 +127,7 @@ export GIT_DIR
 
 # Check if the given tag exists.
 if ! git show-ref --verify --quiet -- "refs/tags/$BUILD_TAG"; then
-  echo "\"$BUILD_TAG\" is not a valid tag."
+  echo "--build-tag: \"$BUILD_TAG\" is not a valid tag."
   exit $E_BADARGS
 fi
 
@@ -128,10 +137,6 @@ eval $(git show $BUILD_TAG:VERSION --)
 SOURCE_DIR=$BUILD_DIR/$BUILD_TAG
 DISTRIBUTION_DIR=$BUILD_DIR/distribution
 DOCUMENTATION_DIR=$BUILD_DIR/documentation
-
-# Unpack documentation artifacts
-mkdir -p $DOCUMENTATION_DIR
-tar -zxvf $DOC_PKG --strip-components 1 -C $DOCUMENTATION_DIR
 
 # Export source tree to a destination directory.
 mkdir -p $SOURCE_DIR
@@ -167,17 +172,10 @@ REVISION_ID=$(get_revision_id $COMMIT_OBJECT)
   echo -n "${MYSQL_VERSION_MAJOR}.${MYSQL_VERSION_MINOR}.${MYSQL_VERSION_PATCH}"
 ) > $INFO_SRC
 
-# Generate ChangeLog
-CHANGELOG=$SOURCE_DIR/Docs/ChangeLog
-
-# Show build tag.
-TAG_SHOW=$(git show --max-count=0 $BUILD_TAG --)
-echo -e "$TAG_SHOW\n" > $CHANGELOG
-
 # Build source distribution
 mkdir -p $DISTRIBUTION_DIR
 pushd $DISTRIBUTION_DIR
-cmake $SOURCE_DIR -DMYSQL_DOCS_LOCATION:PATH=$DOCUMENTATION_DIR
+cmake $SOURCE_DIR -DMYSQL_DOCS_LOCATION:PATH=$DOC_DIR
 make dist
 popd
 
