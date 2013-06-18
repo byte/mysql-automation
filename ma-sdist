@@ -123,7 +123,7 @@ if ! git show-ref --verify --quiet -- "refs/tags/$BUILD_TAG"; then
 fi
 
 # Populate the environment with version components.
-eval $(git show $BUILD_TAG:VERSION)
+eval $(git show $BUILD_TAG:VERSION --)
 
 SOURCE_DIR=$BUILD_DIR/$BUILD_TAG
 DISTRIBUTION_DIR=$BUILD_DIR/distribution
@@ -135,7 +135,7 @@ tar -zxvf $DOC_PKG --strip-components 1 -C $DOCUMENTATION_DIR
 
 # Export source tree to a destination directory.
 mkdir -p $SOURCE_DIR
-git archive --worktree-attributes --format=tar $BUILD_TAG | tar -xvf - -C $SOURCE_DIR
+git archive --worktree-attributes --format=tar $BUILD_TAG -- | tar -xvf - -C $SOURCE_DIR
 
 #
 # Process revision control logs.
@@ -171,7 +171,7 @@ REVISION_ID=$(get_revision_id $COMMIT_OBJECT)
 CHANGELOG=$SOURCE_DIR/Docs/ChangeLog
 
 # Show build tag.
-TAG_SHOW=$(git show --max-count=0 $BUILD_TAG)
+TAG_SHOW=$(git show --max-count=0 $BUILD_TAG --)
 echo -e "$TAG_SHOW\n" > $CHANGELOG
 
 # Build source distribution
