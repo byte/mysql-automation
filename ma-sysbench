@@ -1,0 +1,100 @@
+#!/bin/bash -exu
+#
+# Automates running the SysBench benchmark.
+#
+# Options:
+#
+#  --hostname <host>
+#  Host where the MySQL server is running.
+#
+#  --config <file>
+#  SysBench options, taken from file.cnf.
+#
+#  --concurrency
+#  Concurrency level, one for each iteration.
+#
+#  -h, --help
+#  Print a help message and exit.
+#
+# Usage:
+#
+# $ ma-sysbench --hostname localhost --config readonly_1000K \
+#               --concurrency "64 128 256 512 1024 1536 2048"
+#
+
+E_BADARGS=65
+E_NOFILE=66
+
+#
+# Command options.
+#
+
+program_name=$0
+
+function usage
+{
+  echo "Usage: $program_name --hostname <host> --config <file>" \
+       "--concurrency <threads> --help"
+  exit $E_BADARGS
+}
+
+# Print usage if no parameters were given.
+if [ $# -eq 0 ]; then usage; fi
+
+# Parse command options.
+TEMP=$(getopt -n "$program_name" -o h \
+-l hostname:,config:,concurrency:,help -- "$@")
+
+# Error was reported on stderr.
+if [ $? != 0 ]; then exit $E_BADARGS; fi
+
+eval set -- "$TEMP"
+
+#
+# Process command options.
+#
+
+while true
+do
+  case "$1" in
+    --hostname) HOSTNAME=$2; shift 2 ;;
+    --config) CONFIG_NAME=$2; shift 2 ;;
+    --concurrency) CONCURRENCY=$2; shift 2 ;;
+    -h|--help) usage ;;
+    --) shift ; break ;;
+    *) echo "Unknown error!" ; exit 1 ;;
+  esac
+done
+
+# Required option.
+function missing
+{
+  echo "$program_name: option \`$1' is required" >&2
+  exit $E_BADARGS
+}
+
+# Check required options.
+for var in HOSTNAME CONFIG_NAME CONCURRENCY; do
+  if [[ ${!var:+isset} != isset ]]; then
+    missing "--$(echo $var | tr '[A-Z]' '[a-z]')";
+  fi
+done
+
+if [ ! -f "${CONFIG_NAME}.cnf" ]; then
+  echo "\"${CONFIG_NAME}.cnf\" either does not exist, or is not a file." >&2
+  exit $E_NOFILE
+fi
+
+ITERATIONS=${ITERATIONS:=1}
+
+OPTIONS=$(eval echo $(tr '\n' ' ' < "${CONFIG_NAME}.cnf"))
+
+for threads in $CONCURRENCY; do
+  for iter in $(seq 1 1 $ITERATIONS); do
+    LOG_FILE="sysbench_${CONFIG_NAME}_${threads}_${iter}.txt"
+    sysbench $OPTIONS --num-threads=$threads prepare
+    sysbench $OPTIONS --num-threads=$threads run | tee "$LOG_FILE"
+    if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "SysBench failed"; exit 1; fi
+    sysbench $OPTIONS --num-threads=$threads cleanup
+  done
+done

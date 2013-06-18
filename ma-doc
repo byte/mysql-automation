@@ -1,0 +1,99 @@
+#!/bin/bash -exu
+#
+# Generate parts of the documentation that are needed for inclusion
+# with MySQL distributions. Mostly man pages and other fragments.
+#
+# The MySQL documentation repository contains a combination of the
+# actual documentation source and the components and systems required
+# to build the documentation.
+#
+
+E_BADARGS=65
+E_NOFILE=66
+
+MYSQLDOC_DIR="$1"  # Path to documentation repository (mysqldoc)
+TOOLSET_DIR="$2"   # Path to documentation toolset repository (mysqldoc-toolset)
+REFMAN="$3"        # Name of the reference manual content directory (refman-5.5)
+MYSQLTEST="$4"     # Name of the Test Framework manual content dir. (mysqltest-2.0)
+OUTPUT_DIR="$5"    # Directory where output artifacts will be written
+
+if [ -z "$MYSQLDOC_DIR" -o \
+     -z "$TOOLSET_DIR"  -o \
+     -z "$REFMAN"       -o \
+     -z "$MYSQLTEST"    -o \
+     -z "$OUTPUT_DIR" ]
+then
+  echo "Usage: `basename $0` mysqldoc-dir toolset-dir refman mysqltest out-dir"
+  exit $E_BADARGS
+fi
+
+C14N_TOOLSET_DIR=$(readlink -ne $TOOLSET_DIR)
+
+if [ $? -ne 0 -o ! -d "$C14N_TOOLSET_DIR" ]; then
+  echo "Root \"$TOOLSET_DIR\" either does not exist, or is not a directory."
+  exit $E_NOFILE
+fi
+
+# Helper function to build targets
+function make_target()
+{
+  DIR=$1
+  TARGET=$2
+
+  if [ ! -d "$MYSQLDOC_DIR/$DIR" ]; then
+    echo "Root \"$DIR\" either does not exist, or is not a directory."
+    exit $E_NOFILE
+  fi
+
+  echo "* Updating $DIR \"$TARGET\""
+
+  make TOOLSET_DIR="$C14N_TOOLSET_DIR" -C "$MYSQLDOC_DIR/$DIR" $TARGET
+
+  STATUS=$?
+
+  if [ $STATUS -ne 0 ]; then
+    echo "Updating target(s) failed."
+    exit $STATUS
+  fi
+}
+
+# Helper function to copy artifacts
+function copy_artifacts
+{
+  SOURCE_DIR=$1
+  DEST_DIR=$2
+
+  echo "* Copying $SOURCE_DIR artifacts to $DEST_DIR"
+
+  for ((i = 0 ; i < ${#artifacts[@]} ; i++))
+  do
+    declare -a SRC_DEST=(${artifacts[$i]})
+    cp -R "$SOURCE_DIR/${SRC_DEST[0]}" "$DEST_DIR/${SRC_DEST[1]}"
+  done
+}
+
+# Make ID maps for all directories referenced by main document
+make_target $REFMAN "idmap.refs"
+
+# Make refman and mysqltest directories
+make_target $REFMAN "man fragments mysql.info fill_help_tables.sql"
+make_target $MYSQLTEST "man"
+
+# Setup output directory structure
+echo "* Setting up \"$OUTPUT_DIR\""
+
+mkdir -p $OUTPUT_DIR/{scripts,Docs,support-files/MacOSX}
+
+# Copy refman artifacts
+artifacts=('man/ /'                                       \
+           'fragments/INSTALL-SOURCE /'                   \
+           'fill_help_tables.sql scripts/'                \
+           'mysql.info Docs/'                             \
+           'fragments/INSTALL-BINARY Docs/'               \
+           'fragments/ReadMe.txt support-files/MacOSX/')
+copy_artifacts $MYSQLDOC_DIR/$REFMAN $OUTPUT_DIR
+
+# Copy mysqltest artifacts
+artifacts=('man/ /')
+copy_artifacts $MYSQLDOC_DIR/$MYSQLTEST $OUTPUT_DIR
+

@@ -1,0 +1,95 @@
+#!/bin/bash -exu
+#
+# Generate a unit test distribution package.
+#
+# Options:
+#
+#  -b, --buil-dir <dir>
+#  Root directory for the build tree.
+#
+#  -p, --package <name>
+#  Name of the package that will be created.
+#
+#  -h, --help
+#  Print a help message and exit.
+#
+# Usage:
+#
+# $ ma-udist --build-dir mysql-5.5/debug --package unittest-Debug.tar.gz
+#
+
+E_BADARGS=65
+
+#
+# Command options.
+#
+
+program_name=$0
+
+function usage
+{
+  echo "Usage: $program_name --build-dir <dir> --package <name> --help"
+  exit $E_BADARGS
+}
+
+# Print usage if no parameters were given.
+if [ $# -eq 0 ]; then usage; fi
+
+# Parse command options.
+TEMP=$(getopt -n "$program_name" -o b:p:h -l build-dir:,package:,help -- "$@")
+
+# Error was reported on stderr.
+if [ $? != 0 ]; then exit $E_BADARGS; fi
+
+eval set -- "$TEMP"
+
+#
+# Process command options.
+#
+
+while true
+do
+  case "$1" in
+    -c|--build-dir) BUILD_DIR=$2; shift 2 ;;
+    -t|--package) PACKAGE=$2; shift 2 ;;
+    -h|--help) usage ;;
+    --) shift ; break ;;
+    *) echo "Unknown error!" ; exit 1 ;;
+  esac
+done
+
+# Required option.
+function missing
+{
+  echo "$program_name: option \`$1' is required" >&2
+  exit $E_BADARGS
+}
+
+# Build directory.
+if [[ ${BUILD_DIR:+isset} != isset ]]; then
+  missing "--build-dir";
+fi
+
+# Package name.
+if [[ ${PACKAGE:+isset} != isset ]]; then
+  missing "--package";
+fi
+
+# Create temporary directory.
+if ! tmpdir=`mktemp -d ${TMPDIR:-/tmp}/udistXXXXXX`;
+then
+  echo "command failed";
+  exit 1;
+fi
+
+trap 'rm -fr $tmpdir' 1 2 3 15
+
+# Copy unit tests to a temporary directory.
+for utdir in $(find $BUILD_DIR -type d -name "unittest"); do
+  find $utdir -type f -regex '.*-t' | xargs cp -t $tmpdir
+done
+
+# Create package.
+tar -zcvf $PACKAGE -C $tmpdir .
+
+rm -fr $tmpdir

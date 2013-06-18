@@ -1,0 +1,207 @@
+#!/bin/bash -exu
+#
+# Build a MySQL/Mac OS X installation package and disk image.
+#
+# Options:
+#
+#  --mysql <file>
+#  MySQL binary tarball distribution.
+#
+#  --prefpane <file>
+#  MySQL Preference Pane binary tarball distribution.
+#
+#  --resources <file>
+#  Archive with resources for building the installation package.
+#
+#  --workspace <dir>
+#  Directory where intermediate build products will reside.
+#
+#  -h, --help
+#  Print a help message and exit.
+#
+# Usage:
+#
+# $ ma-dmg --mysql mysql-5.5.20.t3-osx10.7-universal.tar.gz \
+#          --prefpane MySQL-Preference-Pane.tar.gz          \
+#          --resources MySQL-MacOSX-Resources.tar.gz        \
+#          --workspace pkg-build/
+#
+
+E_BADARGS=65
+E_NOFILE=66
+
+#
+# Command options.
+#
+
+program_name=$0
+
+function usage
+{
+  echo "Usage: $program_name --mysql <file> --resources <file> " \
+       "--prefpane <file> --workspace <pathname> --help"
+  exit $E_BADARGS
+}
+
+# Print usage if no parameters were given.
+if [ $# -eq 0 ]; then usage; fi
+
+# Parse command options.
+TEMP=$(getopt -n "$program_name" -o h \
+-l mysql:,resources:,prefpane:,workspace:,help -- "$@")
+
+# Error was reported on stderr.
+if [ $? != 0 ]; then exit $E_BADARGS; fi
+
+eval set -- "$TEMP"
+
+#
+# Process command options.
+#
+
+while true
+do
+  case "$1" in
+    --mysql) MYSQL=$2; shift 2 ;;
+    --prefpane) PREFPANE=$2; shift 2 ;;
+    --resources) RESOURCES=$2; shift 2 ;;
+    --workspace) WORKSPACE=$2; shift 2 ;;
+    -h|--help) usage ;;
+    --) shift ; break ;;
+    *) echo "Unknown error!" ; exit 1 ;;
+  esac
+done
+
+# Required option.
+function missing
+{
+  echo "$program_name: option \`$1' is required" >&2
+  exit $E_BADARGS
+}
+
+# Check required options.
+for var in MYSQL PREFPANE RESOURCES; do
+  if [[ ${!var:+isset} != isset ]]; then
+    missing "--$(echo $var | tr '[A-Z]' '[a-z]')";
+  elif [ ! -f ${!var} ]; then
+    echo "\"${!var}\" either does not exist, or is not a file." >&2
+    exit $E_NOFILE
+  fi
+done
+
+if [[ ${WORKSPACE:+isset} != isset ]]; then
+  missing "--workspace";
+elif [ -e $WORKSPACE ]; then
+  echo "\"$WORKSPACE\" must not exist." >&2
+  exit $E_NOFILE
+fi
+
+#
+# PackageMaker helper.
+#
+
+function PackageMaker
+{
+  local pkg_dir=$1
+  local pkg_name=$2
+
+  /Developer/Applications/Utilities/PackageMaker.app/Contents/MacOS/PackageMaker \
+  -build -p $pkg_dir/$pkg_name -f $pkg_dir/Contents -r $pkg_dir/Resources        \
+  -i $pkg_dir/Info.plist -d $pkg_dir/Description.plist
+}
+
+#
+# Setup resources.
+#
+
+mkdir $WORKSPACE
+
+MYSQL_RESOURCES_DIR="$WORKSPACE/MyResources"
+
+mkdir $MYSQL_RESOURCES_DIR
+gnutar -zxf $RESOURCES -C $MYSQL_RESOURCES_DIR
+
+#
+# Build MySQL installation package.
+#
+
+MY_DEV_OPTION=$(cat << EOF
+#
+# Default configuration file.
+#
+
+[mysqld]
+bind-address		= 127.0.0.1
+pid-file		= localhost.pid
+log-error		= localhost.err
+character-set-server	= utf8
+max_allowed_packet	= 64M
+
+# Options passed to all MySQL clients.
+[client]
+default-character-set	= utf8
+max_allowed_packet	= 64M
+EOF)
+
+MYSQL_DIR="$WORKSPACE/MySQL"
+
+mkdir -p $MYSQL_DIR/{Contents,Resources}
+gnutar -zxf $MYSQL -C $MYSQL_DIR/Contents
+(cd $MYSQL_DIR/Contents && ln -s mysql* ./mysql)
+mkdir $MYSQL_DIR/etc
+chmod 0755 $MYSQL_DIR/etc
+echo "$MY_DEV_OPTION" > $MYSQL_DIR/etc/my.cnf
+chmod 0644 $MYSQL_DIR/etc/my.cnf
+mv $MYSQL_DIR/etc $MYSQL_DIR/Contents/mysql/
+cp $MYSQL_DIR/Contents/mysql/COPYING $MYSQL_DIR/Resources/License.txt
+cp $MYSQL_RESOURCES_DIR/{ReadMe.txt,postflight,preflight} $MYSQL_DIR/Resources/
+cp $MYSQL_RESOURCES_DIR/{Info.plist,Description.plist} $MYSQL_DIR/
+chmod +x $MYSQL_DIR/Resources/{postflight,preflight}
+chown -R root:wheel $MYSQL_DIR/Contents/
+
+PACKAGE_NAME=$(basename ${MYSQL%.*} .tar)
+
+PackageMaker "$MYSQL_DIR" "$PACKAGE_NAME.pkg"
+
+#
+# Build MySQL Startup Item installation package.
+#
+
+STARTUP_ITEM_DIR="$WORKSPACE/StartupItem"
+
+mkdir -p $STARTUP_ITEM_DIR/{Contents/MySQLCOM,Resources}
+cp $MYSQL_RESOURCES_DIR/{MySQLCOM,StartupParameters.plist} \
+   $STARTUP_ITEM_DIR/Contents/MySQLCOM/
+cp $MYSQL_RESOURCES_DIR/StartupItem.Description.plist \
+   $STARTUP_ITEM_DIR/Description.plist
+cp $MYSQL_RESOURCES_DIR/StartupItem.Info.plist $STARTUP_ITEM_DIR/Info.plist
+cp $MYSQL_RESOURCES_DIR/ReadMe.txt $STARTUP_ITEM_DIR/Resources
+cp $MYSQL_RESOURCES_DIR/StartupItem.postinstall \
+   $STARTUP_ITEM_DIR/Resources/postinstall
+chmod +x $STARTUP_ITEM_DIR/Resources/postinstall
+chown -R root:wheel $STARTUP_ITEM_DIR/Contents/
+
+PackageMaker "$STARTUP_ITEM_DIR" "MySQLStartupItem.pkg"
+
+#
+# Create the disk image that contains the installers.
+#
+
+DISK_IMAGE_DIR="$WORKSPACE/DiskImage"
+
+mkdir $DISK_IMAGE_DIR
+mv $MYSQL_DIR/$PACKAGE_NAME.pkg $DISK_IMAGE_DIR
+gnutar -zxf $PREFPANE -C $DISK_IMAGE_DIR
+mv $STARTUP_ITEM_DIR/MySQLStartupItem.pkg $DISK_IMAGE_DIR
+cp $MYSQL_RESOURCES_DIR/ReadMe.txt $DISK_IMAGE_DIR
+
+hdiutil create -volname "$PACKAGE_NAME" -format UDZO \
+  -srcfolder "$DISK_IMAGE_DIR" "$PACKAGE_NAME.dmg"
+
+chmod +a "$SUDO_USER allow read,delete" "$PACKAGE_NAME.dmg"
+
+#
+# Cleanup.
+#
+
+rm -r $WORKSPACE

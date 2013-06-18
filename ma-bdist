@@ -1,0 +1,235 @@
+#!/bin/bash -exu
+#
+# Generate a binary distribution package. Process yields
+# a gzipped tar file archive for binary distribution.
+#
+# Arguments after the double-dash separator (--) are passed
+# to cmake.
+#
+# Options:
+#
+#  -b, --build-config <name>
+#  MySQL build configuration.
+#
+#  -t, --build-type <type>
+#  The CMake build type.
+#
+#  -f, --build-option <name[=]>
+#  List of optional compile-time features to enable.
+#
+#  -s, --source <pathname>
+#  Source package.
+#
+#  -d, --build-dir <dir>
+#  Root directory for the source and build trees.
+#
+#  -h, --help
+#  Print a help message and exit.
+#
+# Usage:
+#
+#  $ ma-bdist --build-config mysql_release       \
+#             --build-type release               \
+#             --source mysql-5.5.15.tar.gz       \
+#             --build-dir build
+#
+# Environment variables:
+#
+#   MYSQL_BUILD_MAKE_JFLAG
+#   Options to be passed to make.
+#
+
+E_BADARGS=65
+E_NOFILE=66
+
+#
+# Command options.
+#
+
+program_name=$0
+
+function usage
+{
+  echo "Usage: $program_name --build-config <name> --build-type <type> "  \
+                            "--build-option <name> --source <pathname> " \
+                            "--build-dir <dir> --help"
+  exit $E_BADARGS
+}
+
+# Print usage if no parameters were given.
+if [ $# -eq 0 ]; then usage; fi
+
+# Parse command options.
+TEMP=$(getopt -n "$program_name" -o c:t:o:d:s:h \
+-l build-config:,build-type:,build-option:,build-dir:,source:,help -- "$@")
+
+# Error was reported on stderr.
+if [ $? != 0 ]; then exit $E_BADARGS; fi
+
+eval set -- "$TEMP"
+
+#
+# Process command options.
+#
+
+BUILD_OPTIONS=
+
+while true
+do
+  case "$1" in
+    -c|--build-config) BUILD_CONFIG=$2; shift 2 ;;
+    -t|--build-type) BUILD_TYPE=$2; shift 2 ;;
+    -o|--build-option) BUILD_OPTIONS+=("$2"); shift 2 ;;
+    -s|--source) SOURCE=$2; shift 2 ;;
+    -d|--build-dir) BUILD_DIR=$2; shift 2 ;;
+    -h|--help) usage ;;
+    --) shift ; break ;;
+    *) echo "Unknown error!" ; exit 1 ;;
+  esac
+done
+
+# Required option.
+function missing
+{
+  echo "$program_name: option \`$1' is required" >&2
+  exit $E_BADARGS
+}
+
+# The option/argument is not valid.
+function unrecognized
+{
+  echo "$program_name: unrecognized $1: \"$2\"" >&2
+  exit $E_BADARGS
+}
+
+# Source package.
+if [[ ${SOURCE:+isset} != isset ]]; then
+  missing "--source";
+elif [ ! -f $SOURCE ]; then
+  echo "\"$SOURCE\" either does not exist, or is not a file." >&2
+  exit $E_NOFILE
+fi
+
+# Build directory.
+if [[ ${BUILD_DIR:+isset} != isset ]]; then
+  missing "--build-dir";
+elif ! ABS_BUILD_DIR=$(readlink -ne $BUILD_DIR) ||
+     ! test -d $ABS_BUILD_DIR; then
+  echo "\"$BUILD_DIR\" either does not exist, or is not a directory." >&2
+  exit $E_NOFILE
+fi
+
+BUILD_DIR=$ABS_BUILD_DIR
+
+#
+# CMake and other environment settings.
+#
+
+CMAKE_OPTIONS=()
+
+function cmake_add_option
+{
+  local name=$1
+  shift
+  CMAKE_OPTIONS+=(-D$name="$@")
+}
+
+# Hardcode common options.
+cmake_add_option INSTALL_LAYOUT "STANDALONE"
+
+# Platform-specific options.
+case $(uname -s) in
+  *Linux*) cmake_add_option PLATFORM "linux2.6" ;;
+esac
+
+# Build configuration.
+if [[ ${BUILD_CONFIG:+isset} = isset ]]; then
+  cmake_add_option BUILD_CONFIG "$BUILD_CONFIG"
+fi
+
+# Build type.
+case $(echo ${BUILD_TYPE:-?} | tr "[:upper:]" "[:lower:]") in
+  debug)
+    cmake_add_option CMAKE_BUILD_TYPE "Debug"
+    # Workaround a mysql_release shortcoming.
+    if [[ ${BUILD_CONFIG:-} = "mysql_release" ]]; then
+      cmake_add_option COMPILATION_COMMENT "MySQL Community Server - Debug (GPL)"
+    fi
+  ;;
+  release)
+    cmake_add_option CMAKE_BUILD_TYPE "Release"
+  ;;
+  relwithdebinfo)
+    cmake_add_option CMAKE_BUILD_TYPE "RelWithDebInfo"
+  ;;
+  ?) ;;
+  *)
+    unrecognized "--build-type" $BUILD_TYPE
+  ;;
+esac
+
+# Build options.
+for bopt in "${BUILD_OPTIONS[@]}"
+do
+  lc_bopt=$(echo $bopt | tr "[:upper:]" "[:lower:]")
+  case "${lc_bopt:-?}" in
+    #
+    # name[:=]*)
+    #   cmake_add_option WITH_OPTION "${BUILD_TYPE#*[:=]}"
+    # ;;
+    #
+    valgrind)
+      cmake_add_option WITH_VALGRIND 1
+      cmake_add_option PACKAGE_SUFFIX "-valgrind"
+      cmake_add_option CMAKE_C_FLAGS "-DHAVE_purify"
+      cmake_add_option CMAKE_CXX_FLAGS "$CXXFLAGS -DHAVE_purify"
+    ;;
+    maintainer)
+      cmake_add_option MYSQL_MAINTAINER_MODE 1
+    ;;
+    ?) ;;
+    *)
+      unrecognized "--build-option" "$bopt"
+    ;;
+  esac
+done
+
+#
+# Setup and build.
+#
+
+SOURCE_NAME=$(basename ${SOURCE%.*} .tar)
+
+echo $SOURCE_NAME
+
+# Extract source code.
+tar -xf $SOURCE -C $BUILD_DIR/
+
+# Make and change to build directory.
+mkdir $BUILD_DIR/$BUILD_TYPE
+pushd $BUILD_DIR/$BUILD_TYPE
+
+# Generate makefiles.
+cmake $BUILD_DIR/$SOURCE_NAME "${CMAKE_OPTIONS[@]}" "$@"
+
+# Print build options.
+echo BEGIN_CMAKECACHE
+cat CMakeCache.txt
+echo END_CMAKECACHE
+
+# Print preprocessor conditionals.
+echo BEGIN_CONFIG
+egrep '^#define' include/config.h
+echo END_NORMAL_CONFIG
+
+# Make package.
+make ${MYSQL_BUILD_MAKE_JFLAG:-} VERBOSE=1 package
+
+# Change directory to build area.
+cd $BUILD_DIR
+
+# Move built packages.
+mkdir packages
+mv $BUILD_TYPE/*.tar.gz packages/
+
+popd

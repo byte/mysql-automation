@@ -1,0 +1,183 @@
+#!/bin/bash -exu
+#
+# Generate a source distribution package. Process yields
+# a gzipped tar file archive for source distribution.
+#
+# Options:
+#
+#  --git-dir <dir>
+#  Path to Git repository.
+#
+#  --doc-pkg <pathname>
+#  Path to a gzipped tar file which contains the required
+#  documentation artifacts.
+#
+#  --build-tag <tag>
+#  A Git tag reference that refers to the last commit.
+#
+#  --build-dir <dir>
+#  Path to top build directory.
+#
+#  -h, --help
+#  Print a help message and exit.
+#
+# Usage:
+#
+# $ ma-sdist --git-dir .git --doc-pkg mysql-5.5-doc.tar.gz      \
+#            --build-tag "jenkins-mysql-5.5-cpack_source-30"    \
+#            --build-dir build/
+#
+
+E_BADARGS=65
+E_NOFILE=66
+
+#
+# Command options.
+#
+
+program_name=$0
+
+function usage
+{
+  echo "Usage: $program_name --git-dir <dir> --doc-pkg <pathname> "  \
+                            "--build-tag <tag> --build-dir <dir> --help"
+  exit $E_BADARGS
+}
+
+# Print usage if no parameters were given.
+if [ $# -eq 0 ]; then usage; fi
+
+# Parse command options.
+TEMP=$(getopt -n "$program_name" -o h \
+-l git-dir:,doc-pkg:,build-tag:,build-dir:,help -- "$@")
+
+# Error was reported on stderr.
+if [ $? != 0 ]; then exit $E_BADARGS; fi
+
+eval set -- "$TEMP"
+
+#
+# Process command options.
+#
+
+GIT_DIR=
+DOC_PKG=
+BUILD_TAG=
+BUILD_DIR=
+
+while true
+do
+  case "$1" in
+    --git-dir) GIT_DIR=$2; shift 2 ;;
+    --doc-pkg) DOC_PKG=$2; shift 2 ;;
+    --build-tag) BUILD_TAG=$2; shift 2 ;;
+    --build-dir) BUILD_DIR=$2; shift 2 ;;
+    -h|--help) usage ;;
+    --) shift ; break ;;
+    *) echo "Unknown error!" ; exit 1 ;;
+  esac
+done
+
+if [ -z "$GIT_DIR" -o -z "$DOC_PKG" -o -z "$BUILD_TAG" -o -z "$BUILD_DIR" ]
+then
+  usage
+fi
+
+# Disable exit on error for argument checking.
+set +e
+
+# TODO: Use git rev-parse --resolve-git-dir <path>
+ABS_GIT_DIR=$(readlink -ne $GIT_DIR)
+
+if [ $? -ne 0 -o ! -d "$ABS_GIT_DIR" ]; then
+  echo "\"$GIT_DIR\" either does not exist, or is not a git directory."
+  exit $E_NOFILE
+fi
+
+GIT_DIR=$ABS_GIT_DIR
+
+if [ ! -f "$DOC_PKG" ]; then
+  echo "\"$DOC_PKG\" either does not exist, or is not a file."
+  exit $E_NOFILE
+fi
+
+ABS_BUILD_DIR=$(readlink -ne $BUILD_DIR)
+
+if [ $? -ne 0 -o ! -d "$ABS_BUILD_DIR" ]; then
+  echo "\"$BUILD_DIR\" either does not exist, or is not a directory."
+  exit $E_NOFILE
+fi
+
+BUILD_DIR=$ABS_BUILD_DIR
+
+# Exit if a command finishes with a non-zero status.
+set -e
+
+# Export to subsequent git commands.
+export GIT_DIR
+
+# Check if the given tag exists.
+if ! git show-ref --verify --quiet -- "refs/tags/$BUILD_TAG"; then
+  echo "\"$BUILD_TAG\" is not a valid tag."
+  exit $E_BADARGS
+fi
+
+# Populate the environment with version components.
+eval $(git show $BUILD_TAG:VERSION)
+
+SOURCE_DIR=$BUILD_DIR/$BUILD_TAG
+DISTRIBUTION_DIR=$BUILD_DIR/distribution
+DOCUMENTATION_DIR=$BUILD_DIR/documentation
+
+# Unpack documentation artifacts
+mkdir -p $DOCUMENTATION_DIR
+tar -zxvf $DOC_PKG --strip-components 1 -C $DOCUMENTATION_DIR
+
+# Export source tree to a destination directory.
+mkdir -p $SOURCE_DIR
+git archive --worktree-attributes --format=tar $BUILD_TAG | tar -xvf - -C $SOURCE_DIR
+
+#
+# Process revision control logs.
+#
+
+# Given a Git commit object, generate a pseudo Bazaar revision id.
+function get_revision_id
+{
+  local git_abbrev_hash=$(git log --abbrev-commit --abbrev=16 --format="%h" $1 -1)
+  local git_committer_email=$(git log --format="%ce" $1 -1)
+  local git_committer_date=$(git log --format="%cD" $1 -1)
+  local bzr_committer_date=$(date -u -d "$git_committer_date" "+%Y%m%d%H%M%S")
+  echo "$git_committer_email-$bzr_committer_date-$git_abbrev_hash"
+}
+
+# Generate INFO_SRC
+INFO_SRC=$SOURCE_DIR/Docs/INFO_SRC
+COMMIT_OBJECT=$(git rev-parse $BUILD_TAG^{commit})
+ABBREV_COMMIT_OBJECT=$(git log --abbrev-commit --format="%h" $COMMIT_OBJECT -1)
+REVISION_ID=$(get_revision_id $COMMIT_OBJECT)
+
+# INFO_SRC contents must at least include revision-id and MySQL version.
+(
+  echo -e "commit: $COMMIT_OBJECT"
+  echo -e "abbrev-commit: $ABBREV_COMMIT_OBJECT"
+  echo -e "build-tag: $BUILD_TAG\n"
+  echo -e "revision-id: $REVISION_ID\n"
+  echo -n "MySQL source "
+  echo -n "${MYSQL_VERSION_MAJOR}.${MYSQL_VERSION_MINOR}.${MYSQL_VERSION_PATCH}"
+) > $INFO_SRC
+
+# Generate ChangeLog
+CHANGELOG=$SOURCE_DIR/Docs/ChangeLog
+
+# Show build tag.
+TAG_SHOW=$(git show --max-count=0 $BUILD_TAG)
+echo -e "$TAG_SHOW\n" > $CHANGELOG
+
+# Build source distribution
+mkdir -p $DISTRIBUTION_DIR
+pushd $DISTRIBUTION_DIR
+cmake $SOURCE_DIR -DMYSQL_DOCS_LOCATION:PATH=$DOCUMENTATION_DIR
+make dist
+popd
+

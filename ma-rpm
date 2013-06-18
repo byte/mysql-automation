@@ -1,0 +1,129 @@
+#!/bin/bash -exu
+#
+# Build MySQL RPM package(s).
+#
+# Options:
+#
+#  --source <pathname>
+#  Source package.
+#
+#  --workspace <dir>
+#  Root directory for the source and build trees.
+#
+#  --build-config <name>
+#  MySQL build configuration.
+#
+#  -h, --help
+#  Print a help message and exit.
+#
+# Usage:
+#
+# $ ma-rpm --source mysql-5.5.15.tar.gz --workspace /rpmbuild
+#
+
+E_BADARGS=65
+E_NOFILE=66
+
+#
+# Command options.
+#
+
+program_name=$0
+
+function usage
+{
+  echo "Usage: $program_name --source <pathname> --workspace <path> --help"
+  exit $E_BADARGS
+}
+
+# Print usage if no parameters were given.
+if [ $# -eq 0 ]; then usage; fi
+
+# Parse command options.
+TEMP=$(getopt -n "$program_name" -o h -l source:,workspace:,build-config:,help -- "$@")
+
+# Error was reported on stderr.
+if [ $? != 0 ]; then exit $E_BADARGS; fi
+
+eval set -- "$TEMP"
+
+#
+# Process command options.
+#
+
+while true
+do
+  case "$1" in
+    --build-config) BUILD_CONFIG=$2; shift 2 ;;
+    --source) SOURCE=$2; shift 2 ;;
+    --workspace) WORKSPACE=$2; shift 2 ;;
+    -h|--help) usage ;;
+    --) shift ; break ;;
+    *) echo "Unknown error!" ; exit 1 ;;
+  esac
+done
+
+# Required option.
+function missing
+{
+  echo "$program_name: option \`$1' is required" >&2
+  exit $E_BADARGS
+}
+
+# Source package.
+if [[ ${SOURCE:+isset} != isset ]]; then
+  missing "--source";
+elif [ ! -f $SOURCE ]; then
+  echo "\"$SOURCE\" either does not exist, or is not a file." >&2
+  exit $E_NOFILE
+fi
+
+# Workspace directory.
+if [[ ${WORKSPACE:+isset} != isset ]]; then
+  missing "--workspace";
+elif [ ! -d $WORKSPACE ]; then
+  echo "\"$WORKSPACE\" either does not exist, or is not a directory." >&2
+  exit $E_NOFILE
+fi
+
+# Build configuration.
+if [[ ${BUILD_CONFIG:+isset} != isset ]]; then
+  missing "--build-config";
+fi
+
+#
+# Setup build environment and build binary/source packages.
+#
+
+# Set current working directory.
+pushd $WORKSPACE
+
+# Path to top of build area.
+TOPDIR="$WORKSPACE/rpmbuild"
+
+# Unpack spec file
+tar -C . --strip=2 -zxf ${SOURCE} -v '*.spec'
+
+# Setup RPM directory structure.
+mkdir -p $TOPDIR/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+
+# Setup artifacts directory and a directory for temporary files.
+mkdir -p packages tmp
+
+# Move source package to rpm-build's source/patches directory.
+mv ${SOURCE} $TOPDIR/SOURCES
+
+# Build RPM packages.
+rpmbuild -v --define="_topdir $TOPDIR"              \
+            --define="_tmppath $PWD/tmp"            \
+            --define="build_config $BUILD_CONFIG"   \
+            --define="distro_specific 1"            \
+            --define="runselftest 0"                \
+            -ba ${WORKSPACE}/*.spec
+
+# Copy RPM packages to the artifacts directory.
+mv $TOPDIR/SRPMS/*.src.rpm packages/
+mv $TOPDIR/RPMS/*.rpm packages/
+
+# Restore working directory.
+popd
